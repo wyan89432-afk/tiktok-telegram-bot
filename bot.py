@@ -41,11 +41,19 @@ YTDLP_REQUEST_OPTIONS = {
 
 def telegram(method, **kwargs):
     response = requests.post(f"{TG_API}/{method}", **kwargs, timeout=180)
-    response.raise_for_status()
-    data = response.json()
-    if not data.get("ok"):
+    try:
+        data = response.json()
+    except ValueError:
+        data = {"ok": False, "description": response.text[:500]}
+
+    if not response.ok or not data.get("ok"):
         description = data.get("description", "Unknown Telegram API error")
-        raise RuntimeError(f"Telegram {method} failed: {description}")
+        error_code = data.get("error_code", response.status_code)
+        raise RuntimeError(
+            f"Telegram {method} failed (HTTP {response.status_code}, "
+            f"API {error_code}): {description}. "
+            "Check TELEGRAM_CHAT_ID and confirm the bot is still in the group."
+        )
     return data
 
 
