@@ -5,6 +5,7 @@ from pathlib import Path
 
 import requests
 import yt_dlp
+from yt_dlp.networking.impersonate import ImpersonateTarget
 from supabase import create_client
 
 USERNAME = os.environ["TIKTOK_USERNAME"].lstrip("@")
@@ -18,7 +19,6 @@ TG_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 PROFILE_URL = f"https://www.tiktok.com/@{USERNAME}"
 MAX_SCAN = 20
 
-# TikTok sometimes rejects requests that do not resemble a normal browser.
 TIKTOK_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -31,7 +31,8 @@ TIKTOK_HEADERS = {
 
 YTDLP_REQUEST_OPTIONS = {
     "http_headers": TIKTOK_HEADERS,
-    "impersonate": "chrome",
+    # yt-dlp's Python API requires an ImpersonateTarget object, not a string.
+    "impersonate": ImpersonateTarget.from_str("chrome"),
     "socket_timeout": 30,
     "retries": 5,
     "extractor_retries": 5,
@@ -43,8 +44,19 @@ def telegram(method, **kwargs):
     response.raise_for_status()
     data = response.json()
     if not data.get("ok"):
-        raise RuntimeError(f"Telegram API error: {data}")
+        description = data.get("description", "Unknown Telegram API error")
+        raise RuntimeError(f"Telegram {method} failed: {description}")
     return data
+
+
+def check_telegram():
+    me = telegram("getMe")["result"]
+    chat = telegram("getChat", data={"chat_id": CHAT_ID})["result"]
+    print(
+        "Telegram connection OK. "
+        f"Bot=@{me.get('username', 'unknown')}, "
+        f"chat_type={chat.get('type', 'unknown')}."
+    )
 
 
 def get_recent_videos():
@@ -85,16 +97,20 @@ def get_recent_videos():
                 return videos
 
             last_error = RuntimeError(
-                "TikTok returned an empty video list. The account may be private, "
-                "rate-limited, or blocked from this runner."
+                "TikTok returned an empty video list. Account privacy, "
+                "rate limiting, or runner blocking may be responsible."
             )
         except Exception as exc:
             last_error = exc
-            print(f"TikTok scan attempt {attempt}/3 failed: {type(exc).__name__}: {exc}")
+            print(
+                f"TikTok scan attempt {attempt}/3 failed: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
 
         if attempt < 3:
             delay = 10 * attempt
-            print(f"Retrying TikTok scan in {delay} seconds...")
+            print(f"Retrying TikTok scan in {delay} seconds...", flush=True)
             time.sleep(delay)
 
     raise RuntimeError(
@@ -124,7 +140,19 @@ def save_baseline(videos):
             "link_sent": False,
         }, on_conflict="video_id").execute()
     set_state("initialized", "true")
-    print(f"Initial setup complete. Saved {len(videos)} existing videos; none were sent.")
+    telegram("sendMessage", data={
+        "chat_id": CHAT_ID,
+        "text": (
+            f"✅ TikTok → Telegram bot is connected.\n"
+            f"Account: @{USERNAME}\n"
+            f"Saved {len(videos)} existing videos as the starting point. "
+            "Older videos were not sent. New uploads will be forwarded automatically."
+        ),
+    })
+    print(
+        f"Initial setup complete. Saved {len(videos)} existing videos; "
+        "sent Telegram initialization notice. Existing videos were not forwarded."
+    )
 
 
 def deliver(video):
@@ -179,6 +207,8 @@ def deliver(video):
 
 
 def main():
+    # Verify Telegram credentials/chat access before doing any TikTok work.
+    check_telegram()
     videos = get_recent_videos()
 
     if get_state("initialized") != "true":
