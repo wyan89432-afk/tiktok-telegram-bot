@@ -24,7 +24,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: python -m pip install --disable-pip-version-check --retries 5 --timeout 60 -r requirements.txt
+      - name: Verify dependencies
+        run: |
+          python -m pip check
+          python -c "import requests, yt_dlp; from supabase import create_client; print('Dependencies OK')"
       - name: Run bot
         env:
           TIKTOK_USERNAME: ${{ secrets.TIKTOK_USERNAME }}
