@@ -1,6 +1,13 @@
 name: TikTok Telegram Bot
 
 on:
+  push:
+    branches:
+      - main
+    paths:
+      - "bot.py"
+      - "requirements.txt"
+      - ".github/workflows/bot.yml"
   schedule:
     - cron: "17 * * * *"
   workflow_dispatch:
