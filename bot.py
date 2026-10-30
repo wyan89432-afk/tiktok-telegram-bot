@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 from pathlib import Path
 
 import requests
@@ -17,6 +18,25 @@ TG_API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 PROFILE_URL = f"https://www.tiktok.com/@{USERNAME}"
 MAX_SCAN = 20
 
+# TikTok sometimes rejects requests that do not resemble a normal browser.
+TIKTOK_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.tiktok.com/",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+YTDLP_REQUEST_OPTIONS = {
+    "http_headers": TIKTOK_HEADERS,
+    "impersonate": "chrome",
+    "socket_timeout": 30,
+    "retries": 5,
+    "extractor_retries": 5,
+}
+
 
 def telegram(method, **kwargs):
     response = requests.post(f"{TG_API}/{method}", **kwargs, timeout=180)
@@ -29,26 +49,59 @@ def telegram(method, **kwargs):
 
 def get_recent_videos():
     opts = {
+        **YTDLP_REQUEST_OPTIONS,
         "quiet": True,
         "no_warnings": True,
         "extract_flat": True,
         "playlistend": MAX_SCAN,
-        "ignoreerrors": True,
+        "ignoreerrors": False,
+        "sleep_interval_requests": 1,
+        "max_sleep_interval_requests": 2,
     }
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(PROFILE_URL, download=False)
-    entries = (info or {}).get("entries") or []
-    videos = []
-    for item in entries:
-        if not item:
-            continue
-        video_id = item.get("id")
-        url = item.get("webpage_url") or item.get("url")
-        if video_id and url:
-            if not str(url).startswith("http"):
-                url = f"https://www.tiktok.com/@{USERNAME}/video/{video_id}"
-            videos.append({"video_id": str(video_id), "video_url": str(url)})
-    return videos
+
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(PROFILE_URL, download=False)
+
+            entries = (info or {}).get("entries") or []
+            videos = []
+            for item in entries:
+                if not item:
+                    continue
+                video_id = item.get("id")
+                url = item.get("webpage_url") or item.get("url")
+                if video_id and url:
+                    if not str(url).startswith("http"):
+                        url = f"https://www.tiktok.com/@{USERNAME}/video/{video_id}"
+                    videos.append({
+                        "video_id": str(video_id),
+                        "video_url": str(url),
+                    })
+
+            if videos:
+                print(f"Found {len(videos)} recent TikTok videos.")
+                return videos
+
+            last_error = RuntimeError(
+                "TikTok returned an empty video list. The account may be private, "
+                "rate-limited, or blocked from this runner."
+            )
+        except Exception as exc:
+            last_error = exc
+            print(f"TikTok scan attempt {attempt}/3 failed: {type(exc).__name__}: {exc}")
+
+        if attempt < 3:
+            delay = 10 * attempt
+            print(f"Retrying TikTok scan in {delay} seconds...")
+            time.sleep(delay)
+
+    raise RuntimeError(
+        "Unable to read TikTok uploads after 3 attempts. "
+        "TikTok may be rate-limiting or blocking GitHub Actions. "
+        f"Last error: {last_error}"
+    ) from last_error
 
 
 def get_state(key):
@@ -95,6 +148,7 @@ def deliver(video):
         with tempfile.TemporaryDirectory() as tmp:
             output = str(Path(tmp) / "tiktok.%(ext)s")
             opts = {
+                **YTDLP_REQUEST_OPTIONS,
                 "quiet": True,
                 "no_warnings": True,
                 "outtmpl": output,
@@ -126,8 +180,6 @@ def deliver(video):
 
 def main():
     videos = get_recent_videos()
-    if not videos:
-        raise RuntimeError("No videos were returned. TikTok may be blocking the request.")
 
     if get_state("initialized") != "true":
         save_baseline(videos)
