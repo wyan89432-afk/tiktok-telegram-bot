@@ -1,3 +1,4 @@
 yt-dlp==2026.10.26
+curl-cffi==0.17.0
 supabase==2.27.0
 requests==2.32.5
